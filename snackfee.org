@@ -1,0 +1,245 @@
+* ;;
+#+Title: snackfee
+#+AUTHOR: adam-james
+#+STARTUP: overview
+#+EXCLUDE_TAGS: excl
+#+PROPERTY: header-args :cache yes :noweb yes :results none :mkdirp yes :padline yes :async
+#+HTML_DOCTYPE: html5
+#+OPTIONS: toc:2 num:nil html-style:nil html-postamble:nil html-preamble:nil html5-fancy:t
+
+** deps.edn
+#+NAME: deps.edn
+#+begin_src clojure :tangle ./deps.edn
+{:deps 
+ {org.clojure/clojure  {:mvn/version "1.10.1"}
+  org.clojure/data.xml {:mvn/version "0.0.8"}
+  hiccup/hiccup        {:mvn/version "2.0.0-alpha2"}
+  net.mikera/imagez    {:mvn/version "0.12.0"}
+  svg-clj/svg-clj      {:local/root "/Users/adam/dev/svg-clj"}
+  forge/forge          {:local/root "/Users/adam/dev/forge"}}
+
+ :paths ["src" "test" "resources"]}
+
+#+end_src
+
+** readme
+#+BEGIN_SRC markdown :tangle ./readme.md
+# Snackfee - An Even Dumber Project
+
+I really enjoy the Drawfee Youtube Channel. On a recent VOD they talked about making cookie cutters.
+
+This is source code that makes cookie cutters from the drawings on [this stream](https://youtu.be/CbkxY75rIl8?t=1238).
+
+Turning this:
+
+![Cropped Screenshot of a sketch of Nathan](good-nathan.png)
+
+Into this:
+
+![Top view of a cookie cutter derived from the sketch of Nathan. One of Two](nathan-01.png)
+
+![Bottom view of a cookie cutter derived from the sketch of Nathan. Two of Two](nathan-02.png)
+
+That's the idea.
+
+There is a .STL file in this project root directory that can be printed to make a cookie cutter. I don't have a printer myself, so I am not sure if everything is appropriately scaled.
+
+This is a WIP.
+
+#+END_SRC
+
+* ns
+#+BEGIN_SRC clojure :tangle ./src/snackfee/main.clj
+(ns snackfee.main
+  (:require [clojure.string :as str]
+            [clojure.data.xml :as xml]
+            [clojure.java.shell :refer [sh]]
+            [forge.model :as mdl]
+            [forge.utils :as utils]
+            [forge.compile.scad :as scad]
+            [forge.import.image :as fim]
+            [svg-clj.elements :as el]
+            [svg-clj.path :as path]
+            [svg-clj.composites :as cp :refer [svg]]
+            [svg-clj.transforms :as tf]
+            [svg-clj.tools :as tools]
+            [hiccup.core :refer [html]]
+            [mikera.image.core :as im]
+            [mikera.image.filters :as filt]
+            [mikera.image.colours :as col]))
+#+END_SRC
+
+* util
+#+BEGIN_SRC clojure :tangle ./src/snackfee/main.clj
+(defn seconds->timestamp [s]
+  (let [hh (format "%02d" (int (/ s 3600)))
+        mm (format "%02d" (int (/ (rem s 3600) 60)))
+        ss (format "%02d" (rem s 60))]
+    (apply str (interpose ":" [hh mm ss]))))
+
+(defn clean-name [name]
+  (-> name
+
+      (str/lower-case)
+      (str/replace #"!" "")
+      (str/replace #"'" "")
+      (str/replace #"," "")
+      (str/replace #"/" "-")
+      (str/replace #"\|" "-")
+      (str/replace #"\\" "-")
+      (str/replace #"&" "and")
+      (str/replace #" " "-")))
+
+(defn delete! [fname]
+  (sh "rm" fname))
+
+#+END_SRC
+
+* url-data
+There are two different meanings to URL in this program.
+
+The first is the user supplied URL. This is what you get when you copy a URL using the Youtube interface.
+
+The second is the 'canonical URL' which ytdl fetches for you. 
+
+It is the second URL that must be passed into ffmpeg in order to download the contents.
+
+Any time url is used, that refers to the user-supplied url.
+Video-url refers to the canonical url.
+
+#+BEGIN_SRC clojure :tangle ./src/snackfee/main.clj
+(defn parse-url [url]
+  (let [[url & rest] (str/split url #"[\?&]")
+        xr (map #(str/split % #"=") rest)
+        keys (map keyword (into [:url] (map first xr)))
+        vals (into [url] (map second xr))]
+    (zipmap keys vals)))
+
+(defn yt-url->video-data [url]
+  (let [[title video-url _ descr]
+        (-> (sh "youtube-dl" "-e" "-g" "--get-description" url)
+            (:out)
+            (str/split-lines))]
+    {:title title
+     :descr descr
+     :video-url video-url}))
+
+#+END_SRC
+
+* image
+#+BEGIN_SRC clojure :tangle ./src/snackfee/main.clj
+(defn save-image! [video-url time fname]
+  (sh "ffmpeg" 
+      "-ss" time
+      "-i" video-url
+      "-vframes" "1" 
+      "-s" "1920x1080" 
+      "-f" "image2" fname))
+
+(defn img->svg! [fname & color?]
+  (let [new-fname (str (first (str/split fname #"\.")) ".svg")
+        settings (if (first color?) 
+                   ["color" "-p" "7" "-f" "16" "-g" "36"]
+                   ["bw"])]
+    (apply sh (concat ["vtracer"
+                       "--mode" "polygon"
+                       "--colormode"]
+                      settings
+                      ["--input" fname
+                       "--output" new-fname]))
+    (delete! fname)
+    new-fname))
+
+(defn screenshot! [url fname]
+  (let [urlp (parse-url url)
+        data (yt-url->video-data (:url urlp))
+        video-url (:video-url data)
+        name (clean-name (:title data))
+        time (seconds->timestamp (read-string (:t urlp)))]
+    (save-image! video-url time fname)
+    fname))
+
+#+END_SRC
+
+* capture-drawing
+#+BEGIN_SRC clojure :tangle ./src/snackfee/main.clj
+(def cookie-url "https://youtu.be/CbkxY75rIl8?t=1238")
+
+(comment
+  ;; run this once to save the base img
+  (screenshot! cookie-url "base.png")
+)
+
+(def base (im/load-image "base.png"))
+(def good-nathan (im/sub-image base 225 230 410 410))
+(def powerful-karina (im/sub-image base 630 200 440 320))
+(def badboy-jacob (im/sub-image base 1125 240 330 400))
+(def ethereal-julia (im/sub-image base 730 550 410 325))
+
+(comment
+  ;; run this once to save the base img
+  (im/save good-nathan "good-nathan.png")
+  )
+#+END_SRC
+
+* process
+#+BEGIN_SRC clojure :tangle ./src/snackfee/main.clj
+(def handle
+  (let [r 40
+        t 7
+        d (* 2 r)]
+  (-> (mdl/difference
+       (mdl/cylinder r t)
+       (-> (mdl/box d d d)
+           (mdl/translate [r 0 0])))
+      (mdl/rotate [0 90 0]))))
+
+(def nathan-pieces
+  (->> (fim/import "good-nathan.png")
+       (drop 2)
+       first
+       first))
+
+(def nathan-outline (first nathan-pieces))
+(def nathan-outer (first (first (drop 2 nathan-outline))))
+(def nathan-inner (second (first (drop 2 nathan-outline))))
+(def nathan-bits (rest nathan-pieces))
+
+(def nathan-wall
+  (let [h 150
+        t 7
+        wall (-> (mdl/offset nathan-outer t)
+                 (mdl/extrude h))
+        lip (-> (mdl/offset nathan-outer (* 3 t))
+                (mdl/extrude t))
+        inner (-> nathan-outer
+                  (mdl/extrude (+ 10 h)))]
+    (-> (mdl/difference 
+         (mdl/union
+          wall
+          (-> lip (mdl/translate [0 0 (- h t)])))
+         (-> inner (mdl/translate [0 0 -5])))
+        (mdl/mirror [0 1 0])
+        (mdl/scale [0.3 0.3 0.3]))))
+  
+(def nathan-details
+  (let [t 7
+        h 21
+        base (-> nathan-inner
+                 (mdl/extrude t))
+        details (-> nathan-bits
+                    (mdl/extrude h))]
+    (-> (mdl/union
+         details
+         (-> base (mdl/translate [0 0 (- h t)]))
+         (-> handle (mdl/translate [0 0 (- h t)])))
+        (mdl/mirror [0 1 0])
+        (mdl/scale [0.3 0.3 0.3]))))
+
+(def nathan
+  (mdl/group 
+   (-> nathan-wall (mdl/translate [70 0 0]))
+   (-> nathan-details (mdl/translate [-70 0 0]))))
+
+#+END_SRC
+

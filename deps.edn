@@ -1,0 +1,9 @@
+{:deps 
+ {org.clojure/clojure  {:mvn/version "1.10.1"}
+  org.clojure/data.xml {:mvn/version "0.0.8"}
+  hiccup/hiccup        {:mvn/version "2.0.0-alpha2"}
+  net.mikera/imagez    {:mvn/version "0.12.0"}
+  svg-clj/svg-clj      {:local/root "/Users/adam/dev/svg-clj"}
+  forge/forge          {:local/root "/Users/adam/dev/forge"}}
+
+ :paths ["src" "test" "resources"]}
